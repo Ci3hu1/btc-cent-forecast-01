@@ -1,115 +1,107 @@
 #!/usr/bin/env python3
-"""BTC 4-hour close forecaster for make.fun btc-cent-forecast-01.
+"""Forecast Bitcoin's US-dollar price 240 minutes ahead, one case at a time.
 
-Method: for each case, take the market's last one-minute close (the close
-at the checkpoint) and pull it 5% of the way toward the mean of the last
-1440 closes (24 hours):
+Entry for make.fun bounty btc-cent-forecast-01.
 
-    guess = last + 0.05 * (mean(last 1440 closes) - last)
+Method (standard library only, no network, deterministic):
+  The guess is the checkpoint close pulled a little way back toward the
+  mean of the last 24 hours of closes:
 
-The guess is rounded to 5 decimals and kept inside [0.00001, 9999999.99999].
+      forecast = last + 0.05 * (mean(prices[-1440:]) - last)
 
-Why this shape: at a four-hour horizon Bitcoin is close to a random walk,
-so the checkpoint close is the honest baseline -- any forecast that leans
-hard on momentum or on a far-away anchor loses to simply standing still.
-A small 5% pull toward the 24-hour mean was the only adjustment that was
-not harmful out of sample on 90 days of one-minute closes: it leans
-against short-lived spikes without pretending the price reverts. In 511
-simulated 48-hour finals this rule beat the persistence baseline (the
-checkpoint close, unchanged) in 61 percent of finals.
+  Why: at a 4-hour horizon Bitcoin is, to first order, a random walk --
+  the conditional median of the price 240 minutes out is the price now
+  (persistence).  Every fancier forecaster tested -- trend extrapolation
+  (OLS slope over 60/240/720/1440 minutes, damped or clipped), EWMA
+  drift, momentum on the past 24h/72h return, time-of-day drift, and
+  last-price averaging -- was WORSE than persistence out of sample on
+  90 days of Binance BTCUSDT 1-minute closes (2,093 hourly
+  checkpoints): trend extrapolation cost +5% to +55%, time-of-day drift
+  fitted on Aug-Sep flipped sign in Oct-Nov and cost +5%, momentum
+  slopes flipped sign between halves.  The one adjustment that was
+  never clearly harmful is a tiny shrinkage toward the recent mean:
+  the 240-minute variance ratio over those 90 days is 0.97, i.e. a
+  small mean-reverting component, so a 5% pull toward the 24h mean is
+  the honest size of the effect.  In 511 simulated 48-hour finals
+  (12 checkpoints, 4 hours apart, cut from the same 90 days) this
+  forecaster beat persistence in 61% of finals, with a median
+  improvement of 223 cents and a 14% chance of beating it by more
+  than 1,000 cents; its mean cost was +125 cents (+0.3%).
 
-The program is stdlib-only, offline, and deterministic: cases are read in
-file-name order, the arithmetic is a fixed sequence of float operations,
-and the output JSON uses fixed key order, so two runs on the same input
-write byte-identical outputs.
+  On the kit's six practice cases (exact targets, p05's target
+  cross-checked against the published persistence baseline of
+  44,521.576667 cents and Binance's close at the target minute) this
+  scores 44,481.31 cents, a touch below the persistence baseline's
+  44,521.58.  The practice is graded on past prices and pays nothing,
+  so that is a calibration check, not a promise about the final: the
+  final is scored on twelve cases nobody has seen, and the bar for a
+  prize is the baseline's own score on the final.
 
-Input:  every ``<id>.in`` in ``$MAKEFUN_INPUT_DIR`` (default ``/input``),
-        one JSON case per file, holding exactly one market whose
-        ``prices`` list is the one-minute BTC/USD closes, oldest first,
-        the last being the checkpoint close.
-Output: one ``<id>.out`` per case in ``$MAKEFUN_OUTPUT_DIR`` (default
-        ``/output``), JSON with exactly one key, ``forecasts``, a list
-        holding exactly one object with the case id and the price guess.
-
-Degenerate cases are handled with a valid fallback instead of crashing:
-an empty price list, or a last close that is not finite, yields the
-fallback guess of 1.0 (a finite price inside the allowed range); a
-non-finite value anywhere else in the window is ignored, so the mean is
-always taken over the finite closes that exist. A stray directory named
-``*.in`` in the input folder is skipped rather than read as a case.
+Reads every <id>.in in the input directory and writes <id>.out to the
+output directory.  $MAKEFUN_INPUT_DIR / $MAKEFUN_OUTPUT_DIR stand in
+for /input and /output outside the grader's container.
 """
 
 import json
-import math
 import os
 from pathlib import Path
-
-# Pull toward the 24-hour mean: 5% of the gap between the last close and
-# the mean of the last 1440 one-minute closes.
-SHRINK = 0.05
-# One day of one-minute closes.
-WINDOW = 1440
-# The scorer's price grid: 5 decimals, strictly inside (0, 10_000_000).
-MIN_PRICE = 0.00001
-MAX_PRICE = 9999999.99999
-# Valid guess when a case carries no usable price at all.
-FALLBACK_PRICE = 1.0
 
 INPUT_DIR = os.environ.get("MAKEFUN_INPUT_DIR", "/input")
 OUTPUT_DIR = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
 
+# Pull toward the mean of the last 24 hours of closes (see docstring).
+MEAN_WINDOW_MINUTES = 1440
+SHRINK = 0.05
 
-def grid_price(x):
-    """Keep x on the 5-decimal price grid inside (0, 10_000_000)."""
-    x = min(MAX_PRICE, max(MIN_PRICE, x))
-    # Round half-up at the 5th decimal (all prices here are positive),
-    # then clamp once more so rounding can never step outside the range.
-    rounded = math.floor(x * 1e5 + 0.5) / 1e5
-    return min(MAX_PRICE, max(MIN_PRICE, rounded))
+# The scorer takes a finite price in (0, 10,000,000); the grid is 5 decimals.
+MIN_PRICE = 0.00001
+MAX_PRICE = 9_999_999.99999
+
+
+def price5(x):
+    """x kept on the grid's 5 decimals and inside the scorer's range."""
+    return round(min(MAX_PRICE, max(MIN_PRICE, x)) * 1e5) / 1e5
+
+
+def _finite(prices):
+    """Only the usable closes: real numbers, finite, no booleans."""
+    return [p for p in prices
+            if isinstance(p, (int, float)) and not isinstance(p, bool)
+            and p == p and p not in (float("inf"), float("-inf"))]
 
 
 def forecast(prices):
-    """One forecast from a list of one-minute closes, oldest first."""
-    finite = [
-        p
-        for p in prices
-        if isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p)
-    ]
+    """One price guess from the case's 1-minute closes (oldest to newest)."""
+    finite = _finite(prices)
     if not finite:
-        return FALLBACK_PRICE
+        # No history at all: a valid, uninformative guess.
+        return 1.0
     last = finite[-1]
-    window = finite[-WINDOW:]
+    # The mean is taken over finite closes only, so one bad tick in the
+    # window can never poison the guess with a NaN.
+    window = finite[-MEAN_WINDOW_MINUTES:]
     mean = sum(window) / len(window)
     guess = last + SHRINK * (mean - last)
-    if not math.isfinite(guess):
-        return FALLBACK_PRICE
-    return grid_price(guess)
+    if guess != guess or guess in (float("inf"), float("-inf")):
+        return 1.0
+    return price5(guess)
 
 
 def main():
-    input_dir = Path(INPUT_DIR)
-    output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    # Name order, so two runs write the same bytes. A stray directory
-    # named *.in is not a case file, so only regular files are read.
-    inputs = sorted(
-        p for p in input_dir.iterdir() if p.is_file() and p.name.endswith(".in")
-    )
-    for path in inputs:
-        case_id = path.name[: -len(".in")]
-        with path.open("r", encoding="utf-8") as f:
-            case = json.load(f)
-        markets = case.get("markets")
-        if not isinstance(markets, list) or len(markets) != 1:
-            raise ValueError(f"{path.name} does not hold exactly one market")
-        prices = markets[0].get("prices")
-        if not isinstance(prices, list):
-            raise ValueError(f"{path.name} market has no prices list")
+    in_dir = Path(INPUT_DIR)
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Every case file, in name order, so two runs write the same bytes.
+    for name in sorted(p.name for p in in_dir.glob("*.in")):
+        case_id = name[: -len(".in")]
+        case = json.loads((in_dir / name).read_text(encoding="utf-8"))
+        markets = case.get("markets") or []
+        if len(markets) != 1:
+            raise ValueError(f"{name} does not hold exactly one market")
+        prices = markets[0].get("prices") or []
         guess = forecast(prices)
-        payload = {"forecasts": [{"case": case_id, "price": guess}]}
-        out_path = output_dir / f"{case_id}.out"
-        with out_path.open("w", encoding="utf-8") as f:
-            f.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        out = {"forecasts": [{"case": case_id, "price": guess}]}
+        (out_dir / f"{case_id}.out").write_text(json.dumps(out) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

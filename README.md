@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/btc-cent-forecast-01/Ci3hu1/btc-cent-forecast-01/rank.svg)](https://make.fun/bounty/btc-cent-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=btc-cent-forecast-01)
 [![reward](https://make.fun/badge/btc-cent-forecast-01/Ci3hu1/btc-cent-forecast-01/reward.svg)](https://make.fun/bounty/btc-cent-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=btc-cent-forecast-01)
 
-A small, deterministic forecaster for the price of BTC/USD four hours ahead. It starts from the latest one-minute close and nudges it five percent of the way toward the average close of the past 24 hours — a gentle pull back toward the recent mean, and nothing more. On the six practice cases it averaged 44,481.31 cents of absolute error, a touch better than simply repeating the last close (44,521.58 cents).
+A small, deterministic forecaster for Bitcoin's US-dollar price four hours ahead. It starts from the checkpoint close and pulls it 5% of the way toward the mean of the last 24 hours of one-minute closes — a gentle shrinkage toward the recent mean, and nothing more. On the six practice cases it averaged 44,481.31 cents of absolute error, a touch better than simply repeating the last close (44,521.58 cents).
 
 ## Run it
 
